@@ -69,6 +69,7 @@ dependencies {
   implementation deps.apollo.runtime
   implementation deps.apollo.rx2Support
   implementation deps.apollo.androidSupport
+  implementation deps.kotlinq.dsl
 
   api project(':service-api')
   api deps.android.support.annotations

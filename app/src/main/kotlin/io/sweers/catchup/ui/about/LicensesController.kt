@@ -85,6 +85,10 @@ import io.sweers.catchup.util.isInNightMode
 import io.sweers.catchup.util.luminosity
 import io.sweers.catchup.util.w
 import jp.wasabeef.recyclerview.animators.FadeInUpAnimator
+import okhttp3.MediaType
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import okhttp3.RequestBody
 import okio.Okio
 import javax.inject.Inject
 import javax.inject.Qualifier
@@ -95,6 +99,7 @@ import javax.inject.Qualifier
 class LicensesController : ButterKnifeController(), Scrollable {
 
   @Inject lateinit var apolloClient: ApolloClient
+  @Inject lateinit var okHttpClient: OkHttpClient
 
   @Inject
   @field:ForLicenses
@@ -190,6 +195,7 @@ class LicensesController : ButterKnifeController(), Scrollable {
         .flatMap {
           Single.zip(
               // Fetch the repositories by their IDs, map down to its
+              // TODO use kotlinq here
               Rx2Apollo.from(apolloClient.query(RepositoriesByIdsQuery(it.keys.toList()))
                   .httpCachePolicy(HttpCachePolicy.CACHE_FIRST))
                   .firstOrError()

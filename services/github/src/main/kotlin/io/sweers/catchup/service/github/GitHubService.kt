@@ -16,36 +16,25 @@
 
 package io.sweers.catchup.service.github
 
-import com.apollographql.apollo.ApolloClient
-import com.apollographql.apollo.api.Input
-import com.apollographql.apollo.api.cache.http.HttpCachePolicy
-import com.apollographql.apollo.exception.ApolloException
-import com.apollographql.apollo.rx2.Rx2Apollo
 import dagger.Binds
 import dagger.Module
 import dagger.Provides
 import dagger.Reusable
 import dagger.multibindings.IntoMap
 import io.reactivex.Maybe
-import io.reactivex.Observable
 import io.sweers.catchup.gemoji.EmojiMarkdownConverter
-import io.sweers.catchup.gemoji.replaceMarkdownEmojis
-import io.sweers.catchup.service.api.CatchUpItem
-import io.sweers.catchup.service.api.DataRequest
-import io.sweers.catchup.service.api.DataResult
-import io.sweers.catchup.service.api.LinkHandler
-import io.sweers.catchup.service.api.Service
-import io.sweers.catchup.service.api.ServiceKey
-import io.sweers.catchup.service.api.ServiceMeta
-import io.sweers.catchup.service.api.ServiceMetaKey
-import io.sweers.catchup.service.api.TextService
-import io.sweers.catchup.service.github.GitHubSearchQuery.AsRepository
-import io.sweers.catchup.service.github.model.SearchQuery
-import io.sweers.catchup.service.github.model.TrendingTimespan
+import io.sweers.catchup.service.api.*
+import io.sweers.catchup.service.github.model.*
 import io.sweers.catchup.service.github.type.LanguageOrder
 import io.sweers.catchup.service.github.type.LanguageOrderField
 import io.sweers.catchup.service.github.type.OrderDirection
 import io.sweers.catchup.util.nullIfBlank
+import okhttp3.MediaType
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import okhttp3.RequestBody
+import org.kotlinq.api.JsonParser
+import org.threeten.bp.Instant
 import javax.inject.Inject
 import javax.inject.Qualifier
 
@@ -56,68 +45,60 @@ private const val SERVICE_KEY = "github"
 
 internal class GitHubService @Inject constructor(
     @InternalApi private val serviceMeta: ServiceMeta,
-    private val apolloClient: ApolloClient,
+    private val apolloClient: OkHttpClient,
     private val emojiMarkdownConverter: EmojiMarkdownConverter,
     private val linkHandler: LinkHandler)
   : TextService {
 
   override fun meta() = serviceMeta
 
+  @Suppress("UNCHECKED_CAST")
   override fun fetchPage(request: DataRequest): Maybe<DataResult> {
     val query = SearchQuery(
         createdSince = TrendingTimespan.WEEK.createdSince(),
         minStars = 50)
         .toString()
 
-    val searchQuery = apolloClient.query(GitHubSearchQuery(query,
-        50,
-        LanguageOrder.builder()
+    val alternateQuery = TrendingQuery.Builder()
+        .order(LanguageOrder.builder()
             .direction(OrderDirection.DESC)
             .field(LanguageOrderField.SIZE)
-            .build(),
-        Input.fromNullable(request.pageId.nullIfBlank())))
-        .httpCachePolicy(HttpCachePolicy.NETWORK_ONLY)
+            .build())
+        .after(request.pageId.nullIfBlank())
+        .build(SearchQuery(
+            createdSince = TrendingTimespan.WEEK.createdSince(),
+            minStars = 50).toString())
 
-    return Rx2Apollo.from(searchQuery)
-        .firstOrError()
-        .doOnSuccess {
-          if (it.hasErrors()) {
-            throw ApolloException(it.errors().toString())
-          }
-        }
-        .map { it.data()!! }
-        .flatMap { data ->
-          Observable.fromIterable(data.search().nodes().orEmpty())
-              .cast(AsRepository::class.java)
-              .map {
-                with(it) {
-                  val description = description()
-                      ?.let { " — ${replaceMarkdownEmojis(it, emojiMarkdownConverter)}" }
-                      .orEmpty()
-
-                  CatchUpItem(
-                      id = id().hashCode().toLong(),
-                      hideComments = true,
-                      title = "${name()}$description",
-                      score = "★" to stargazers().totalCount().toInt(),
-                      timestamp = createdAt(),
-                      author = owner().login(),
-                      tag = languages()?.nodes()?.firstOrNull()?.name(),
-                      source = licenseInfo()?.name(),
-                      itemClickUrl = url().toString()
-                  )
-                }
-              }
-              .toList()
-              .map {
-                if (data.search().pageInfo().hasNextPage()) {
-                  DataResult(it, data.search().pageInfo().endCursor())
-                } else {
-                  DataResult(it, null)
-                }
-              }
-        }
-        .toMaybe()
+    return Maybe.just(
+        Request.Builder()
+            .post(RequestBody.create(MediaType.parse("application/graphql"),
+                TrendingQuery.compatibleRequestString(alternateQuery.fragment)))
+            .build()
+            .let(apolloClient::newCall)
+            .execute()
+            .let {
+              JsonParser.parseToObject(it.body()?.string() ?: "")
+            }.let {
+              PageInfo(it["pageInfo"] as Map<String, Any?>) to it["nodes"] as Iterable<Map<String, Any>>
+            }.let { (info, maps) ->
+              maps.map(::Repository)
+                  .map {
+                    with(it) {
+                      CatchUpItem(
+                          id = id.hashCode().toLong(),
+                          hideComments = true,
+                          title = "$name - $description",
+                          score = "★" to stargazers,
+                          timestamp = Instant.parse(createdAt),
+                          author = owner,
+                          tag = languages,
+                          source = licenseInfo,
+                          itemClickUrl = url)
+                    }
+                  }.let {
+                    DataResult(it, info.endCursor)
+                  }
+            })
   }
 
   override fun linkHandler() = linkHandler
